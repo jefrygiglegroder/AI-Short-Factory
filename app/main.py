@@ -2,6 +2,8 @@
 
 Commands implemented in this phase:
 - hardware: show detected hardware (GPU/CPU/disk) using app.core.hardware
+- account: account management (create/list/get)
+- idea: idea management (create/list/get)
 
 This file intentionally keeps the CLI small and dependency-free so it can be
 expanded reliably in future phases.
@@ -22,9 +24,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     sp_hw = subparsers.add_parser("hardware", help="Show detected hardware (GPU/CPU/disk)")
     sp_hw.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of human-friendly text")
 
-    # Placeholders for future Phase 1 commands (not implemented here):
-    # subparsers.add_parser("account", help="Account management commands (create/list)")
-    # subparsers.add_parser("dashboard", help="Launch GUI dashboard")
+    # Register additional CLI subcommands if available
+    try:
+        # Importing these modules is intentionally lazy so the CLI stays lightweight
+        from app.cli import account_commands, idea_commands  # type: ignore
+
+        account_commands.register_subcommand(subparsers)
+        idea_commands.register_subcommand(subparsers)
+    except Exception:
+        # If the optional CLI modules are not present or fail to import, continue without them
+        pass
 
     return parser.parse_args(argv)
 
@@ -58,6 +67,17 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(pretty_print_hardware())
         return 0
+
+    # If a subcommand handler was attached by a subparser, call it
+    if hasattr(args, "func") and callable(getattr(args, "func")):
+        try:
+            result = args.func(args)
+            return int(result) if isinstance(result, int) else 0
+        except SystemExit as se:
+            return se.code if isinstance(se.code, int) else 1
+        except Exception as exc:
+            print("Error while running command:", exc, file=sys.stderr)
+            return 2
 
     # No command: show help
     print("AI Short Factory - Phase 1 (minimal CLI)\n")

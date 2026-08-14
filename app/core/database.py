@@ -35,6 +35,11 @@ logger = get_logger(__name__)
 
 Base = declarative_base()
 
+# Module-level default engine used by get_engine() and session helpers when no explicit
+# engine is provided. Tests can call init_db(engine) to set the default engine for the
+# current process so repositories/session_scope() will use the same Engine instance.
+_DEFAULT_ENGINE: Optional[Engine] = None
+
 
 def _create_sqlite_uri(db_path: str) -> str:
     # Ensure absolute path and proper sqlite URI
@@ -64,10 +69,22 @@ def _apply_sqlite_pragmas(dbapi_connection, connection_record):
 def get_engine(db_path: Optional[str] = None, echo: bool = False) -> Engine:
     """Create and return a SQLAlchemy Engine.
 
-    If db_path is None, read from app.core.config.get_config().db_path.
+    Behavior:
+    - If db_path is None and a default engine has previously been set (via init_db or
+      earlier get_engine without db_path), return that default engine.
+    - If db_path is None and no default engine exists, construct one from config and
+      cache it as the default for subsequent calls.
+    - If db_path is provided, construct and return a new Engine bound to that path
+      (without changing the default engine).
+
+    This lets tests create a temporary Engine and then call init_db(engine) to make
+    it the application's default for the duration of the test.
     """
-    cfg = get_config()
+    global _DEFAULT_ENGINE
     if db_path is None:
+        if _DEFAULT_ENGINE is not None:
+            return _DEFAULT_ENGINE
+        cfg = get_config()
         db_path = cfg.db_path
 
     uri = _create_sqlite_uri(db_path)
@@ -79,6 +96,11 @@ def get_engine(db_path: Optional[str] = None, echo: bool = False) -> Engine:
             event.listen(engine, "connect", _apply_sqlite_pragmas)
         except Exception:
             logger.debug("Could not attach sqlite pragmas event listener")
+
+    # If caller asked for the default engine (no db_path provided originally), cache it
+    if db_path is not None and _DEFAULT_ENGINE is None and get_config().db_path == str(Path(db_path).resolve()):
+        # Only auto-cache when the created engine corresponds to the configured default path
+        _DEFAULT_ENGINE = engine
 
     return engine
 
@@ -119,7 +141,13 @@ def init_db(engine: Optional[Engine] = None, create_tables: bool = True) -> None
 
     Non-destructive: create_tables will call Base.metadata.create_all(engine)
     which only creates missing tables and does not drop existing ones.
+
+    If an Engine is provided, this function will set it as the module default so
+    subsequent calls to get_engine() or session_scope() without parameters will
+    use the same Engine instance (this is important for tests that create an
+    isolated temporary database).
     """
+    global _DEFAULT_ENGINE
     if engine is None:
         engine = get_engine()
 
@@ -134,6 +162,11 @@ def init_db(engine: Optional[Engine] = None, create_tables: bool = True) -> None
     except Exception:
         # If anything unexpected happens, continue and let SQLAlchemy handle it
         logger.debug("init_db: could not ensure db directory exists")
+
+    # Set the module-level default engine to the provided one so repository code
+    # that uses session_scope() without an explicit engine will operate against
+    # the same database instance.
+    _DEFAULT_ENGINE = engine
 
     if create_tables:
         try:

@@ -19,6 +19,7 @@ Notes:
 from __future__ import annotations
 
 import contextlib
+import importlib
 import logging
 from pathlib import Path
 from typing import Iterator, Optional
@@ -136,6 +137,12 @@ def init_db(engine: Optional[Engine] = None, create_tables: bool = True) -> None
 
     if create_tables:
         try:
+            # Ensure application models are imported and registered with Base.metadata
+            try:
+                importlib.import_module("app.models")
+            except Exception:
+                logger.debug("Could not import 'app.models' prior to create_all()", exc_info=True)
+
             Base.metadata.create_all(engine)
             logger.info("Database initialized and tables created (if needed)")
         except Exception as exc:
